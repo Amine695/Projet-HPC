@@ -1,0 +1,13 @@
+﻿#executables
+*.out
+
+#fichiers de sorties
+*.mtx
+*.txt
+!TF16.mtx
+!TF10.mtx
+
+#sujet
+sujet.pdf
+
+*.o
