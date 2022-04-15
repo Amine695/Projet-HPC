@@ -264,72 +264,33 @@ void sparsematrix_mm_load(struct sparsematrix_t * M, char const * filename)
 /* y += M*x or y += transpose(M)*x, according to the transpose flag */
 
 
-void sparse_matrix_vector_product(u32 * y, struct sparsematrix_t const * M, u32 const * x, bool transpose,long block_size_pad)
+void sparse_matrix_vector_product(u32 * y, struct sparsematrix_t const * M, u32 const * x, bool transpose)
 {
         long nnz = M->nnz;
         int nrows = transpose ? M->ncols : M->nrows;
         int const * Mi = M->i;
         int const * Mj = M->j;
         u32 const * Mx = M->x;
-        u32 tab[block_size_pad];
+     
         
-
-	#pragma omp parallel
-	{
-		#pragma omp for
-		for(long i = 0; i < nrows * n; i++)
-		{
-			y[i] = 0;
-		}
-
-		#pragma omp for
-		for(long i = 0; i < block_size_pad; i++)
-		{
-			tab[i] = 0;
-		}
-
-		#pragma omp for reduction(+:tab[0:block_size_pad])
-		for (long k = 0; k < nnz; k++) 
-		{
-			int i = transpose ? Mj[k] : Mi[k];
-			int j = transpose ? Mi[k] : Mj[k];
-			u64 v = Mx[k];
-
-			for (int l = 0; l < n; l++)
-			{
-				u64 a = tab[i * n + l];
-				u64 b = x[j * n + l];
-				tab[i * n + l] = (a + v * b);
-			}
-		}
-
-		#pragma omp for
-		for(long i = 0; i < block_size_pad; i++)
-		{
-			u64 a = y[i];
-			y[i] = (tab[i] + a) % prime;
-		}
-	}
-
-
-
-/* 
         #pragma omp parallel for
         for (long i = 0; i < nrows * n; i++)
                 y[i] = 0;
-                            
         
+        #pragma omp parallel for reduction(+:y[0:n*nrows])
         for (long k = 0; k < nnz; k++) {
                 int i = transpose ? Mj[k] : Mi[k];
                 int j = transpose ? Mi[k] : Mj[k];
                 u64 v = Mx[k];
-                
                 for (int l = 0; l < n; l++) {
                         u64 a = y[i * n + l];
                         u64 b = x[j * n + l];
-                        y[i * n + l] = (a + v * b) % prime; // => perf : 81% de sparse_matrix_vector_product
+                        y[i * n + l] = (a + v * b) % prime;
                 }
-        } */
+        }
+
+
+
 }
 
 /****************** dense linear algebra modulo p *************************/ 
@@ -743,8 +704,8 @@ u32 * block_lanczos(struct sparsematrix_t const * M, int n, bool transpose)
                 if (stop_after > 0 && n_iterations == stop_after)
                         break;
 
-                sparse_matrix_vector_product(tmp, M, v, !transpose,block_size_pad);
-                sparse_matrix_vector_product(Av, M, tmp, transpose,block_size_pad);
+                sparse_matrix_vector_product(tmp, M, v, !transpose);
+                sparse_matrix_vector_product(Av, M, tmp, transpose);
 
                 u32 vtAv[n * n];
                 u32 vtAAv[n * n];

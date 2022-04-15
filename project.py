@@ -40,20 +40,35 @@ class Main:
             f.write(payload)
     
     def refresh(self, m):
-        change = False
+        action = False
+        restrained = False
         for filename, d in m.items():
-            fetch = None
+            msg = None
             if not os.path.exists(filename):
-                fetch = "Getting {:32} ({}) [v{}]".format(filename, d['description'], d['version'])
+                msg = "Getting {:32} ({}) [v{}]".format(filename, d['description'], d['version'])
+                download = True
             elif file_hash(filename) != d['hash']:
-                fetch = "Upgrading {:32} ({}) [v{}]".format(filename, d['description'], d['version'])
-            if fetch:
-                if not change:
+                download = 'autoupdate' in d
+                if download:
+                    msg = "Upgrading {:32} ({}) [v{}]".format(filename, d['description'], d['version'])
+                else:
+                    msg = "***NOT*** upgrading {:32} ({}) [v{}]".format(filename, d['description'], d['version'])
+            if msg:
+                if not action:
                     print("\n----------------------------------- UPGRADE ------------------------------------\n")
-                print(fetch)
-                self.get_file(d['url'], filename)
-                change = True
-        if change:
+                print(msg)
+                if download:
+                    self.get_file(d['url'], filename)
+                else:
+                    restrained = True
+                action = True
+        if restrained:
+            print(f"\n!!! WARNING !!! Some of your files differ from those on the server.")
+            print("                 Either they have been remotely updated or you changed them locally.") 
+            print("                 Your files have not been modified.") 
+            print("                 Rename or delete the old file to get the version from the server.")
+
+        if action:
             print("\n--------------------------------------------------------------------------------\n")
     
     def import_module(self, name):
