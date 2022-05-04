@@ -271,12 +271,11 @@ void sparse_matrix_vector_product(u32 * y, struct sparsematrix_t const * M, u32 
         int const * Mi = M->i;
         int const * Mj = M->j;
         u32 const * Mx = M->x;
-     
-        
-        #pragma omp parallel for
-        for (long i = 0; i < nrows * n; i++)
+     		
+		#pragma omp parallel for
+		for (long i = 0; i < nrows * n; i++)
                 y[i] = 0;
-        
+
         #pragma omp parallel for reduction(+:y[0:n*nrows])
         for (long k = 0; k < nnz; k++) {
                 int i = transpose ? Mj[k] : Mi[k];
