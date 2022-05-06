@@ -28,7 +28,7 @@
 #include <sys/stat.h>
 #include <assert.h>
 #include <mmio.h>
-#include <omp.h>
+#include <mpi.h>
 
 typedef uint64_t u64;
 typedef uint32_t u32;
@@ -262,8 +262,6 @@ void sparsematrix_mm_load(struct sparsematrix_t * M, char const * filename)
 }
 
 /* y += M*x or y += transpose(M)*x, according to the transpose flag */
-
-
 void sparse_matrix_vector_product(u32 * y, struct sparsematrix_t const * M, u32 const * x, bool transpose)
 {
         long nnz = M->nnz;
@@ -272,11 +270,10 @@ void sparse_matrix_vector_product(u32 * y, struct sparsematrix_t const * M, u32 
         int const * Mj = M->j;
         u32 const * Mx = M->x;
      		
-		#pragma omp parallel for
-		for (long i = 0; i < nrows * n; i++)
+		
+	for (long i = 0; i < nrows * n; i++)
                 y[i] = 0;
 
-        #pragma omp parallel for reduction(+:y[0:n*nrows])
         for (long k = 0; k < nnz; k++) {
                 int i = transpose ? Mj[k] : Mi[k];
                 int j = transpose ? Mi[k] : Mj[k];
@@ -305,7 +302,6 @@ void matmul_CpAB(u32 * C, u32 const * A, u32 const * B)
            {
                 u64 y = A[i * n + k];
                 u64 z = B[k * n + j];
-                //C[i * n + j] = (x + y * z) % prime; // => perf : 29% de orthogonalize 
                 x = (x + y * z);
             }
             C[i * n + j] = x % prime;
@@ -324,7 +320,6 @@ void matmul_CpAtB(u32 * C, u32 const * A, u32 const * B)
             {
                 u64 y = A[k * n + i];
                 u64 z = B[k * n + j];
-                //C[i * n + j] = (x + y * z) % prime; // => perf : 44% de block_dot_product
                 x = (x + y * z);
             }
 
@@ -462,50 +457,17 @@ int semi_inverse(u32 const * M_, u32 * winv, u32 * d)
 void block_dot_products(u32 * vtAv, u32 * vtAAv, int N, u32 const * Av, u32 const * v)
 {
 
-    long size = n*n;
-    u32 tab1[size];
-    u32 tab2[size];
-
-    #pragma omp parallel
-    {
-        #pragma omp for
-        for (int i = 0; i < n * n; i++)
-        {
-            tab1[i] = 0;
-            tab2[i] = 0;
-        }
-
-        #pragma omp for reduction(+:tab1[0:size])
-        for (int i = 0; i < N; i += n)
-            matmul_CpAtB(tab1,   &v[i*n], &Av[i*n]);
-
-        #pragma omp for reduction(+:tab2[0:size])
-        for (int i = 0; i < N; i += n)
-            matmul_CpAtB(tab2, &Av[i*n], &Av[i*n]);
-
-        #pragma omp for
-        for (int i = 0; i < n * n; i++)
-        {
-            vtAv[i] = tab1[i] % prime;
-            vtAAv[i] = tab2[i] % prime;
-        }
-                
-    }
-
-/*      #pragma omp parallel for
         for (int i = 0; i < n * n; i++)
                 vtAv[i] = 0;
                 
-   
         for (int i = 0; i < N; i += n)
                 matmul_CpAtB(vtAv,   &v[i*n], &Av[i*n]);
         
-        #pragma omp parallel for
         for (int i = 0; i < n * n; i++)
                 vtAAv[i] = 0;
 
         for (int i = 0; i < N; i += n)
-                matmul_CpAtB(vtAAv, &Av[i*n], &Av[i*n]); */
+                matmul_CpAtB(vtAAv, &Av[i*n], &Av[i*n]);
 }
 
 /* Compute the next values of v (in tmp) and p */
@@ -533,31 +495,23 @@ void orthogonalize(u32 * v, u32 * tmp, u32 * p, u32 * d, u32 const * vtAv, const
                         vtAvd[i*n + j] = d[j] ? prime - vtAv[i * n + j] : 0;
 
         /* compute the next value of v ; store it in tmp */        
-        #pragma omp parallel
-        {
-            #pragma omp for
-            for (long i = 0; i < N; i++)
-                    for (long j = 0; j < n; j++)
-                            tmp[i*n + j] = d[j] ? Av[i*n + j] : v[i * n + j];
+        for (long i = 0; i < N; i++)
+                for (long j = 0; j < n; j++)
+                        tmp[i*n + j] = d[j] ? Av[i*n + j] : v[i * n + j];
 
-            #pragma omp for
-            for (long i = 0; i < N; i += n)
-                    matmul_CpAB(&tmp[i*n], &v[i*n], c);
+        for (long i = 0; i < N; i += n)
+                matmul_CpAB(&tmp[i*n], &v[i*n], c);
 
-            #pragma omp for
-            for (long i = 0; i < N; i += n)
-                    matmul_CpAB(&tmp[i*n], &p[i*n], vtAvd);
-            
-            /* compute the next value of p */
-            #pragma omp for
-            for (long i = 0; i < N; i++)
-                    for (long j = 0; j < n; j++)
-                            p[i * n + j] = d[j] ? 0 : p[i * n + j];
-                            
-            #pragma omp for
-            for (long i = 0; i < N; i += n)
-                    matmul_CpAB(&p[i*n], &v[i*n], winv);
-        }
+        for (long i = 0; i < N; i += n)
+                matmul_CpAB(&tmp[i*n], &p[i*n], vtAvd);
+        
+        /* compute the next value of p */
+        for (long i = 0; i < N; i++)
+                for (long j = 0; j < n; j++)
+                        p[i * n + j] = d[j] ? 0 : p[i * n + j];
+                        
+        for (long i = 0; i < N; i += n)
+                matmul_CpAB(&p[i*n], &v[i*n], winv);
 }
 
 void verbosity()
@@ -682,7 +636,6 @@ u32 * block_lanczos(struct sparsematrix_t const * M, int n, bool transpose)
         printf("  - Expecting %s iterations\n", human_its);
         
         /* prepare initial values */
-        #pragma omp parallel for
         for (long i = 0; i < block_size_pad; i++) {
                 Av[i] = 0;
                 v[i] = 0;
@@ -690,7 +643,6 @@ u32 * block_lanczos(struct sparsematrix_t const * M, int n, bool transpose)
                 tmp[i] = 0;
         }
 
-        #pragma omp parallel for
         for (long i = 0; i < block_size; i++)
                 v[i] = random64() % prime;
 
@@ -723,7 +675,6 @@ u32 * block_lanczos(struct sparsematrix_t const * M, int n, bool transpose)
                 orthogonalize(v, tmp, p, d, vtAv, vtAAv, winv, nrows, Av);
 
                 /* the next value of v is in tmp ; copy */
-                #pragma omp parallel for
                 for (long i = 0; i < block_size; i++)
                         v[i] = tmp[i];
 
@@ -761,12 +712,20 @@ void save_vector_block(char const * filename, int nrows, int ncols, u32 const * 
 
 int main(int argc, char ** argv)
 {
+        
         process_command_line_options(argc, argv);
         
         struct sparsematrix_t M;
         sparsematrix_mm_load(&M, matrix_filename);
-
+        // Initialize MPI
+        MPI_Init(NULL,NULL);
+        int process,rank;
+        // get number of processes
+        MPI_Comm_size(MPI_COMM_WORLD,&process);
+        // get the rank of the process
+	MPI_Comm_rank(MPI_COMM_WORLD,&rank);
         u32 *kernel = block_lanczos(&M, n, right_kernel);
+        MPI_Finalize();
  
         if (kernel_filename)
                 save_vector_block(kernel_filename, right_kernel ? M.ncols : M.nrows, n, kernel);

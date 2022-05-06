@@ -1,10 +1,7 @@
-CC = gcc
-CFLAGS = -std=c99 -g -Wall -Wextra -Werror -pg -O3 -march=native -fopenmp -mavx2 -I .
-LDFLAGS =-fopenmp
+CC = mpicc
+CFLAGS = -std=c99 -g -Wall -Wextra -Werror -O3 -march=native -mavx2 -I .
+LDFLAGS =
 
-# Uncomment these for OpenMP
-CFLAGS += -fopenmp
-LDFLAGS += -fopenmp
 
 all: lanczos_modp checker_modp
 lanczos_modp: mmio.o lanczos_modp.o
