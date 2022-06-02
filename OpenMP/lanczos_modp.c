@@ -13,7 +13,7 @@
  *
  * USAGE: 
  *      $ ./lanczos_modp --prime 65537 --n 4 --matrix random_small.mtx
- *
+ * oui
  */
 #define _POSIX_C_SOURCE  1  // ctime
 #include <inttypes.h>
@@ -266,29 +266,52 @@ void sparsematrix_mm_load(struct sparsematrix_t * M, char const * filename)
 
 void sparse_matrix_vector_product(u32 * y, struct sparsematrix_t const * M, u32 const * x, bool transpose)
 {
+        /**
+         * En commentaires se trouve les commandes pour ne pas avoir de dépassement de taille si l'on travail
+         * avec p = 1073741789
+         * Les assertions pasent mais les performances sont un peu moins bonnes donc on les a mis en commentaires
+        */
+
         long nnz = M->nnz;
         int nrows = transpose ? M->ncols : M->nrows;
         int const * Mi = M->i;
         int const * Mj = M->j;
         u32 const * Mx = M->x;
-     		
-		#pragma omp parallel for
-		for (long i = 0; i < nrows * n; i++)
-                y[i] = 0;
+        int nn = nrows * n;
+        for (long i = 0; i < nrows * n; i++) {y[i] = 0;}
 
-        #pragma omp parallel for reduction(+:y[0:n*nrows])
-        for (long k = 0; k < nnz; k++) {
-                int i = transpose ? Mj[k] : Mi[k];
-                int j = transpose ? Mi[k] : Mj[k];
-                u64 v = Mx[k];
-                for (int l = 0; l < n; l++) {
-                        u64 a = y[i * n + l];
-                        u64 b = x[j * n + l];
-                        y[i * n + l] = (a + v * b) % prime;
+        //u64 tab[nn];
+        u64 v,a,b;
+        long i,j;
+        int l;
+        
+        //#pragma omp parallel for private(a,b,l,i,j,v) schedule(static) reduction(+:tab[0:nn])
+        #pragma omp parallel for private(a,b,l,i,j,v) schedule(static) reduction(+:y[0:nn])
+        for (int k = 0; k < nnz; k++) {
+                i = transpose ? Mj[k] : Mi[k];
+                j = transpose ? Mi[k] : Mj[k];
+                v = Mx[k];
+                for (l = 0; l < n; l++) {
+                        a = y[i * n + l];
+                        b = x[j * n + l];
+                        y[i * n + l] = ( a + v * b) % prime;
+
+                        /*
+                        a = tab[i * n + l];
+                        b = x[j * n + l];
+                        tab[i * n + l] = ( a + v * b) % prime;
+                        */
                 }
         }
 
+        #pragma omp parallel for
+	for (long i = 0; i < nrows * n; i++)
+	{
+	    y[i]= y[i] % prime;
+	    //y[i]= tab[i] % prime;
+	}
 
+                
 
 }
 
@@ -305,11 +328,11 @@ void matmul_CpAB(u32 * C, u32 const * A, u32 const * B)
            {
                 u64 y = A[i * n + k];
                 u64 z = B[k * n + j];
-                //C[i * n + j] = (x + y * z) % prime; // => perf : 29% de orthogonalize 
                 x = (x + y * z);
             }
             C[i * n + j] = x % prime;
         }
+
 }
 
 /* C += transpose(A)*B   for n x n matrices */
@@ -324,8 +347,8 @@ void matmul_CpAtB(u32 * C, u32 const * A, u32 const * B)
             {
                 u64 y = A[k * n + i];
                 u64 z = B[k * n + j];
-                //C[i * n + j] = (x + y * z) % prime; // => perf : 44% de block_dot_product
                 x = (x + y * z);
+
             }
 
             C[i * n + j] = x % prime;
@@ -462,51 +485,47 @@ int semi_inverse(u32 const * M_, u32 * winv, u32 * d)
 void block_dot_products(u32 * vtAv, u32 * vtAAv, int N, u32 const * Av, u32 const * v)
 {
 
-    long size = n*n;
-    u32 tab1[size];
-    u32 tab2[size];
+        /**
+         * En commentaires se trouve les commandes pour ne pas avoir de dépassement de taille si l'on travail 
+         * avec p = 1073741789
+         * On les a enlevé car les performances étaient moindres
+        */
 
-    #pragma omp parallel
-    {
-        #pragma omp for
-        for (int i = 0; i < n * n; i++)
-        {
-            tab1[i] = 0;
-            tab2[i] = 0;
-        }
+        //u64 tab[n*n];
+        //u64 tab2[n*n];
 
-        #pragma omp for reduction(+:tab1[0:size])
-        for (int i = 0; i < N; i += n)
-            matmul_CpAtB(tab1,   &v[i*n], &Av[i*n]);
-
-        #pragma omp for reduction(+:tab2[0:size])
-        for (int i = 0; i < N; i += n)
-            matmul_CpAtB(tab2, &Av[i*n], &Av[i*n]);
-
-        #pragma omp for
-        for (int i = 0; i < n * n; i++)
-        {
-            vtAv[i] = tab1[i] % prime;
-            vtAAv[i] = tab2[i] % prime;
-        }
-                
-    }
-
-/*      #pragma omp parallel for
-        for (int i = 0; i < n * n; i++)
+        #pragma omp parallel for
+        for (int i = 0; i < n * n; i++){
                 vtAv[i] = 0;
+                vtAAv[i] = 0;
+                //tab[i] = 0;
+                //tab2[i] = 0;
+        }
                 
-   
+        //#pragma omp parallel for reduction(+:tab[0:n*n])
+        #pragma omp parallel for reduction(+:vtAv[0:n*n])
         for (int i = 0; i < N; i += n)
-                matmul_CpAtB(vtAv,   &v[i*n], &Av[i*n]);
+                matmul_CpAtB(vtAv,&v[i*n], &Av[i*n]);
+                //matmul_CpAtB(tab,&v[i*n], &Av[i*n]);
         
+
+        //#pragma omp parallel for reduction(+:tab2[0:n*n])
+        #pragma omp parallel for reduction(+:vtAAv[0:n*n])
+        for (int i = 0; i < N; i += n)
+                matmul_CpAtB(vtAAv,&Av[i*n], &Av[i*n]);
+                //matmul_CpAtB(tab2,&Av[i*n], &Av[i*n]);
+
         #pragma omp parallel for
         for (int i = 0; i < n * n; i++)
-                vtAAv[i] = 0;
-
-        for (int i = 0; i < N; i += n)
-                matmul_CpAtB(vtAAv, &Av[i*n], &Av[i*n]); */
-}
+        {
+            vtAv[i]  = (vtAv[i]) % prime;
+            vtAAv[i] = (vtAAv[i]) % prime;
+            
+            //vtAv[i]  = (tab[i]) % prime;
+            //vtAAv[i] = (tab2[i]) % prime;
+        }
+       
+} 
 
 /* Compute the next values of v (in tmp) and p */
 void orthogonalize(u32 * v, u32 * tmp, u32 * p, u32 * d, u32 const * vtAv, const u32 *vtAAv, u32 const * winv, int N, u32 const * Av)
@@ -533,31 +552,33 @@ void orthogonalize(u32 * v, u32 * tmp, u32 * p, u32 * d, u32 const * vtAv, const
                         vtAvd[i*n + j] = d[j] ? prime - vtAv[i * n + j] : 0;
 
         /* compute the next value of v ; store it in tmp */        
-        #pragma omp parallel
-        {
-            #pragma omp for
-            for (long i = 0; i < N; i++)
-                    for (long j = 0; j < n; j++)
-                            tmp[i*n + j] = d[j] ? Av[i*n + j] : v[i * n + j];
 
-            #pragma omp for
-            for (long i = 0; i < N; i += n)
-                    matmul_CpAB(&tmp[i*n], &v[i*n], c);
+       
+        #pragma omp parallel for
+        for (long i = 0; i < N; i++)
+                for (long j = 0; j < n; j++)
+                        tmp[i*n + j] = d[j] ? Av[i*n + j] : v[i * n + j];
 
-            #pragma omp for
-            for (long i = 0; i < N; i += n)
-                    matmul_CpAB(&tmp[i*n], &p[i*n], vtAvd);
-            
-            /* compute the next value of p */
-            #pragma omp for
-            for (long i = 0; i < N; i++)
-                    for (long j = 0; j < n; j++)
-                            p[i * n + j] = d[j] ? 0 : p[i * n + j];
-                            
-            #pragma omp for
-            for (long i = 0; i < N; i += n)
-                    matmul_CpAB(&p[i*n], &v[i*n], winv);
-        }
+        #pragma omp parallel for
+        for (long i = 0; i < N; i += n)
+                matmul_CpAB(&tmp[i*n], &v[i*n], c);
+
+        #pragma omp parallel for
+        for (long i = 0; i < N; i += n)
+                matmul_CpAB(&tmp[i*n], &p[i*n], vtAvd);
+        
+        /* compute the next value of p */
+        #pragma omp parallel for
+        for (long i = 0; i < N; i++)
+                for (long j = 0; j < n; j++)
+                        p[i * n + j] = d[j] ? 0 : p[i * n + j];
+                                        
+        #pragma omp parallel for
+        for (long i = 0; i < N; i += n)
+                matmul_CpAB(&p[i*n], &v[i*n], winv);
+      
+
+        
 }
 
 void verbosity()
@@ -663,7 +684,7 @@ u32 * block_lanczos(struct sparsematrix_t const * M, int n, bool transpose)
         int ncols = transpose ? M->nrows : M->ncols;
         long block_size = nrows * n;
         long Npad = ((nrows + n - 1) / n) * n;
-	long Mpad = ((ncols + n - 1) / n) * n;  
+        long Mpad = ((ncols + n - 1) / n) * n;  
         long block_size_pad = (Npad > Mpad ? Npad : Mpad) * n; 
         char human_size[8];
         human_format(human_size, 4 * sizeof(int) * block_size_pad);
