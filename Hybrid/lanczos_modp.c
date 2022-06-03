@@ -28,18 +28,17 @@
 #include <time.h>
 #include <sys/time.h>
 #include <sys/stat.h>
+#include <sys/resource.h>
 #include <assert.h>
 
 #include <mmio.h>
 #include <mpi.h>
 #include <omp.h>
 
-
 typedef uint64_t u64;
 typedef uint32_t u32;
 
 /******************* global variables ********************/
-
 
 long n = 1;
 u64 prime;
@@ -53,7 +52,6 @@ double start;
 double last_print;
 bool ETA_flag;
 int expected_iterations;
-
 //variable for mpi
 int rank;
 long nn;
@@ -298,26 +296,27 @@ void sparsematrix_alloc(struct sparsematrix_t * M, int nl)
 /* y += M*x or y += transpose(M)*x, according to the transpose flag */ 
 void sparse_matrix_vector_product(u32 * y, struct sparsematrix_t const * M, u32 const * x, bool transpose,int nnl)
 {
-        //long nnz = M->nnz;
         int nrows = transpose ? M->ncols : M->nrows;
         int const * Mi = M->i;
         int const * Mj = M->j;
         u32 const * Mx = M->x;
-        int ny=nrows*n;
-
-        // allocate memory for y1 (equivalent to the y but of each process)
-	u32 *y1=malloc(sizeof(*y1) * ny);
-	u64 a,b,v;
+        int ny = nrows * n;
+	int rank;
+        u64 v,a,b;
         long i,j;
         int l;
+
+        // allocate memory for y1 (equivalent to the y but for each process)
+	u32 *y1=malloc(sizeof(*y1) * ny);
+	
         //initialize y
-        for (long i = 0; i < nrows * n; i++)
-                y[i] = 0;
-	int rank;
+        #pragma omp parallel for
+        for (long i = 0; i < nrows * n; i++){y[i] = 0;}
+        
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank); // get the rank of the processes
 
         #pragma omp parallel for private(a,b,l,i,j,v) schedule(static) reduction(+:y[0:ny])
-        for (long k = nz_start; k < nnl+nz_start; k++) {
+        for (long k = 0; k < nnl; k++) {
                 i = transpose ? Mj[k] : Mi[k];
                 j = transpose ? Mi[k] : Mj[k];
                 v = Mx[k];
@@ -327,11 +326,12 @@ void sparse_matrix_vector_product(u32 * y, struct sparsematrix_t const * M, u32 
                         y[i * n + l] = (a + v * b) % prime;
                 }
         }
+
         // reduce the values of y from each process and distribute the result to all processes with y1
         MPI_Allreduce(y,&y1[0],nrows*n,MPI_UNSIGNED,MPI_SUM,MPI_COMM_WORLD);
         MPI_Barrier(MPI_COMM_WORLD); // wait for others 
         #pragma omp parallel for
-        for (long i = 0; i < nrows * n; i++) {y[i] = y1[i]%prime;} // modular reduction for each process
+        for (long i = 0; i < nrows * n; i++) {y[i] = y1[i] % prime;} // modular reduction of y1 and save in y
 
 	MPI_Barrier(MPI_COMM_WORLD); // wait for others
 	free(y1); // memory free
@@ -504,7 +504,8 @@ int semi_inverse(u32 const * M_, u32 * winv, u32 * d)
 void block_dot_products(u32 * vtAv, u32 * vtAAv, int N, u32 const * Av, u32 const * v)
 {
         #pragma omp parallel for
-        for (int i = 0; i < n * n; i++){
+        for (int i = 0; i < n * n; i++)
+        {
                 vtAv[i] = 0;
                 vtAAv[i] = 0;
                 
@@ -514,7 +515,6 @@ void block_dot_products(u32 * vtAv, u32 * vtAAv, int N, u32 const * Av, u32 cons
         for (int i = 0; i < N; i += n)
                 matmul_CpAtB(vtAv,&v[i*n], &Av[i*n]);
         
-
         #pragma omp parallel for reduction(+:vtAAv[0:n*n])
         for (int i = 0; i < N; i += n)
                 matmul_CpAtB(vtAAv,&Av[i*n], &Av[i*n]);
@@ -524,7 +524,6 @@ void block_dot_products(u32 * vtAv, u32 * vtAAv, int N, u32 const * Av, u32 cons
         {
             vtAv[i]  = (vtAv[i]) % prime;
             vtAAv[i] = (vtAAv[i]) % prime;
-            
         }
 }
 
@@ -721,7 +720,7 @@ u32 * block_lanczos(struct sparsematrix_t const * M, int n, bool transpose, int 
 		
 		MPI_Barrier(MPI_COMM_WORLD); // wait for others processes to compute sparse_matrix_vector_product
 
-                // process 0 
+                // process 0 compute all necessary functions
                 if(rank==0)
                 {	
                         u32 vtAv[n * n];
@@ -745,23 +744,29 @@ u32 * block_lanczos(struct sparsematrix_t const * M, int n, bool transpose, int 
                         
                         verbosity();
                 }
-		MPI_Bcast(&stop,1,MPI_BYTE,0,MPI_COMM_WORLD); // broadcast the boolean variable stop
+                // broadcast the boolean variable stop
+		MPI_Bcast(&stop,1,MPI_BYTE,0,MPI_COMM_WORLD); 
+
 		MPI_Barrier(MPI_COMM_WORLD); // wait for others
 		
+                // quite the loop if stop = true
 	        if (stop)
 		        break;
 	       //verbosity();
 		
-		MPI_Bcast(&v[0],block_size_pad,MPI_UNSIGNED,0,MPI_COMM_WORLD); //broadcast the array v
+                // otherwise, broadcast the array v and loop again
+		MPI_Bcast(&v[0],block_size_pad,MPI_UNSIGNED,0,MPI_COMM_WORLD); 
         }
         printf("\n");
        
+        // check for the root
 	if(rank==0)
 	{
 	        if (stop_after < 0)
 	                final_check(nrows, ncols, v, tmp);
 	        printf("  - Terminated in %.1fs after %d iterations\n", wtime() - start, n_iterations);
 	}
+        // memory free
         free(tmp);
         free(Av);
         free(p);
@@ -797,13 +802,18 @@ int main(int argc, char ** argv)
 	MPI_Comm_size(MPI_COMM_WORLD, &com_size); // Number of processes
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);     // rank of each process
 	/*************************/
-        
-        struct sparsematrix_t M;
+        // Commands to increase stack size
+        const rlim_t Size = 1073741824; // = 1Go
+        struct rlimit max;
+        max.rlim_cur = Size;
+        setrlimit(RLIMIT_STACK, &max);
+
+        struct sparsematrix_t M,M1; //M1 local matrix
 	long int nn;
         // for process 0
 	if(rank==0)
 	{
-	    sparsematrix_mm_load(&M, matrix_filename); // load the matrix
+	    sparsematrix_mm_load(&M, matrix_filename); // load the initial matrix
 	    nn = M.nnz; // non zero number 
 	    
 	}
@@ -823,46 +833,92 @@ int main(int argc, char ** argv)
         // if the rank is lower than rm, its own nn is equal to nn/com_size + 1
         if(rank<rm)
         {
-                nn_local=floor(nn/com_size)+1;
-                nz_start=rank*floor(nn/com_size)+rank;
+                nn_local = floor(nn/com_size) + 1;
+                nz_start = rank * floor(nn/com_size) + rank;
         }
         // nz_start is the part of the matrix each process will take
         else
         {
-                nn_local=floor(nn/com_size);
-                nz_start=rank*floor(nn/com_size)+rm;
+                nn_local = floor(nn/com_size);
+                nz_start = rank * floor(nn/com_size) + rm;
         }
+
+        //make list of displacements and counts
+        int displs[com_size],sendcnts[com_size];
+
+        if(rank==0)
+        {
+                
+                for(int i=0;i<com_size;i++)
+                {
+                        if(i<rm)
+                        {
+                                sendcnts[i] = floor(nn/com_size) + 1;
+                                displs[i]   = i * floor(nn/com_size) + i;
+                        }
+                        else
+                        {
+                                sendcnts[i] = floor(nn/com_size);
+                                displs[i]   = i * floor(nn/com_size) + rm;
+                        }
+                }	
+        }
+        
         MPI_Barrier(MPI_COMM_WORLD); // wait for others processes
 
-        // for the others processes
-        if(rank!=0)
+        sparsematrix_alloc(&M1, nn_local); // local matrices allocation
+
+        // take number of rows, cols and indices for the local matrix 
+        if(rank==0)
         {
-                sparsematrix_alloc(&M, nn); // allocate memory for each process
+                M1.nrows=M.nrows;
+                M1.ncols=M.ncols;
+                M1.nnz=M.nnz;
+                for(int k=0;k<nn_local;k++)
+                {
+                        M1.i[k]=M.i[k];
+                        M1.j[k]=M.j[k];
+                        M1.x[k]=M.x[k];
+                }
         }
-        MPI_Barrier(MPI_COMM_WORLD); // wait for others
-        //printf("matrices allocated succesfully");
+        MPI_Barrier(MPI_COMM_WORLD); // wait for others processes
+        //printf("matrices allocated succesfully\n");
 
-        // broadcast the number of rows, cols, nnz and the indices
-        MPI_Bcast(&M.nrows,1,MPI_INT,0,MPI_COMM_WORLD);
-        MPI_Bcast(&M.ncols,1,MPI_INT,0,MPI_COMM_WORLD);
-        MPI_Bcast(&M.nnz,1,MPI_LONG,0,MPI_COMM_WORLD);
-        MPI_Bcast(&M.i[0],nn,MPI_INT,0,MPI_COMM_WORLD);
-        MPI_Bcast(&M.j[0],nn,MPI_INT,0,MPI_COMM_WORLD);
-        MPI_Bcast(&M.x[0],nn,MPI_UNSIGNED,0,MPI_COMM_WORLD);
+        // Broadcast the number of rows, cols and nnz of the local matrix to all processes
+        MPI_Bcast(&M1.nrows,1,MPI_INT,0,MPI_COMM_WORLD);
+        MPI_Bcast(&M1.ncols,1,MPI_INT,0,MPI_COMM_WORLD);
+        MPI_Bcast(&M1.nnz,1,MPI_LONG,0,MPI_COMM_WORLD);
 
-        MPI_Barrier(MPI_COMM_WORLD); // wait for others 
-        u32 *kernel = block_lanczos(&M, n, right_kernel,nn_local); // each process compute the block_lanczos function
+        // use Scatterv to distribute the matrix with i,j and x among all processes
+        MPI_Scatterv(&M.i[0],sendcnts,displs,MPI_INT,&M1.i[0],nn_local,MPI_INT,0,MPI_COMM_WORLD);
+        MPI_Scatterv(&M.j[0],sendcnts,displs,MPI_INT,&M1.j[0],nn_local,MPI_INT,0,MPI_COMM_WORLD);
+        MPI_Scatterv(&M.x[0],sendcnts,displs,MPI_UNSIGNED,&M1.x[0],nn_local,MPI_UNSIGNED,0,MPI_COMM_WORLD);
+        
 
-        // if process 0, save the result
+        MPI_Barrier(MPI_COMM_WORLD); // wait for others processes
+        //printf("matrices bcasted succesfully\n");
+
+        //free unnecessary memory
+        if(rank==0)
+        {
+                free(M.i);
+                free(M.j);
+                free(M.x);
+        }
+        
+        // compute the block_lanczos algorithm for each process
+        u32 *kernel = block_lanczos(&M1, n, right_kernel,nn_local);
+
+        // save the result 
         if(rank==0)
         {	
                 if (kernel_filename)
-                        save_vector_block(kernel_filename, right_kernel ? M.ncols : M.nrows, n, kernel);
+                save_vector_block(kernel_filename, right_kernel ? M1.ncols : M1.nrows, n, kernel);
                 else
-                        printf("Not saving result (no --output given)\n");
+                printf("Not saving result (no --output given)\n");
         }
-        MPI_Barrier(MPI_COMM_WORLD); // wait for others
-        free(kernel); // free memory
-        MPI_Finalize(); // end of MPI
+        MPI_Barrier(MPI_COMM_WORLD); // wait for others processes
+        free(kernel); // memory free
+        MPI_Finalize(); // Quit MPI
         exit(EXIT_SUCCESS);
 }
