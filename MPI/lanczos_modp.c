@@ -790,18 +790,18 @@ int main(int argc, char ** argv)
 	MPI_Barrier(MPI_COMM_WORLD);
 
         //divide the tasks between each process
+        //remainder of elements after dividing equal number of elements to each nodes
         int rm = nn % com_size;
 
-        // non zero number for each process
+        //elements to be stored in each node
         int nn_local;
         
-        // if the rank is lower than rm, its own nn is equal to nn/com_size + 1
+        //add 1 element to all processes whose rank is less than the remainder.. so it equals
         if(rank<rm)
         {
                 nn_local = floor(nn/com_size) + 1;
-                nz_start = rank * floor(nn/com_size) + rank;
+                nz_start = rank * floor(nn/com_size) + rank; //starting index of global matrix to be provided to each processes
         }       
-        // nz_start is the part of the matrix each process will take
         else
         {
                 nn_local = floor(nn/com_size);
@@ -809,17 +809,18 @@ int main(int argc, char ** argv)
         }
 
         //make list of displacements and counts
+        //parameters for scatterv of matrix	
         int displs[com_size],sendcnts[com_size];
 
         if(rank==0)
         {
-                
+                //make list of displacemnts and counts of elements global matrix to send for each node
                 for(int i=0;i<com_size;i++)
                 {
                         if(i<rm)
                         {
-                                sendcnts[i] = floor(nn/com_size) + 1;
-                                displs[i]   = i * floor(nn/com_size) + i;
+                                sendcnts[i] = floor(nn/com_size) + 1; //same as nn_local
+                                displs[i]   = i * floor(nn/com_size) + i;//same as nz_start
                         }
                         else
                         {
